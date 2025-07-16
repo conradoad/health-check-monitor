@@ -5,6 +5,8 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "config.h"
 #include "health_checker.h"
 #include "wifi_manager.h"
@@ -23,6 +25,7 @@ static bool last_health_status = false;
 static void health_check_timer_callback(TimerHandle_t xTimer);
 static void health_check_task(void *pvParameters);
 static esp_err_t http_event_handler(esp_http_client_event_t *evt);
+static void update_health_status(bool status);
 
 void health_checker_start(const char* url, uint32_t interval_ms)
 {
@@ -33,6 +36,13 @@ void health_checker_start(const char* url, uint32_t interval_ms)
     if (is_running) {
         health_checker_stop();
     }
+    
+    // Load last known health status and apply to relay
+    last_health_status = health_checker_load_last_status();
+    gpio_control_set_relay(last_health_status);
+    ESP_LOGI(TAG, "Restored last health status: %s, relay: %s", 
+             last_health_status ? "OK" : "FAIL", 
+             last_health_status ? "ON" : "OFF");
     
     // Save parameters
     strncpy(health_check_url, url, sizeof(health_check_url) - 1);
@@ -73,10 +83,7 @@ void health_checker_stop(void)
         }
         
         is_running = false;
-        last_health_status = false;
-        
-        // Turn off relay when stopping
-        gpio_control_set_relay(false);
+        update_health_status(false);  // Turn off relay and save status
         
         ESP_LOGI(TAG, "Health checker stopped");
     }
@@ -111,8 +118,7 @@ static void health_check_timer_callback(TimerHandle_t xTimer)
         ESP_LOGD(TAG, "WiFi not connected, skipping health check");
         
         // Set relay to OFF when WiFi is not connected
-        last_health_status = false;
-        gpio_control_set_relay(false);
+        update_health_status(false);
     }
 }
 
@@ -121,8 +127,7 @@ static void health_check_task(void *pvParameters)
     // Double check WiFi connection before proceeding
     if (!wifi_manager_is_connected()) {
         ESP_LOGW(TAG, "WiFi disconnected during health check task creation, aborting");
-        last_health_status = false;
-        gpio_control_set_relay(false);
+        update_health_status(false);
         vTaskDelete(NULL);
         return;
     }
@@ -150,8 +155,7 @@ static void health_check_task(void *pvParameters)
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
         ESP_LOGE(TAG, "Failed to initialize HTTP client");
-        last_health_status = false;
-        gpio_control_set_relay(false);
+        update_health_status(false);
         vTaskDelete(NULL);
         return;
     }
@@ -163,17 +167,14 @@ static void health_check_task(void *pvParameters)
         
         if (status_code == 200) {
             ESP_LOGI(TAG, "Health check successful");
-            last_health_status = true;
-            gpio_control_set_relay(true);
+            update_health_status(true);
         } else {
             ESP_LOGW(TAG, "Health check failed with status: %d", status_code);
-            last_health_status = false;
-            gpio_control_set_relay(false);
+            update_health_status(false);
         }
     } else {
         ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
-        last_health_status = false;
-        gpio_control_set_relay(false);
+        update_health_status(false);
     }
     
     esp_http_client_cleanup(client);
@@ -208,4 +209,62 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
             break;
     }
     return ESP_OK;
+}
+
+static void update_health_status(bool status)
+{
+    if (last_health_status != status) {
+        last_health_status = status;
+        gpio_control_set_relay(status);
+        health_checker_save_last_status(status);
+        ESP_LOGI(TAG, "Health status updated: %s, relay: %s", 
+                 status ? "OK" : "FAIL", 
+                 status ? "ON" : "OFF");
+    }
+}
+
+void health_checker_save_last_status(bool status)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error opening NVS handle: %s", esp_err_to_name(err));
+        return;
+    }
+    
+    err = nvs_set_u8(nvs_handle, NVS_KEY_LAST_HEALTH_STATUS, status ? 1 : 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error saving last health status: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGD(TAG, "Last health status saved: %s", status ? "OK" : "FAIL");
+    }
+    
+    nvs_commit(nvs_handle);
+    nvs_close(nvs_handle);
+}
+
+bool health_checker_load_last_status(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Error opening NVS handle for reading: %s", esp_err_to_name(err));
+        return false;  // Default to false if can't read
+    }
+    
+    uint8_t status_value = 0;
+    err = nvs_get_u8(nvs_handle, NVS_KEY_LAST_HEALTH_STATUS, &status_value);
+    nvs_close(nvs_handle);
+    
+    if (err == ESP_OK) {
+        bool status = (status_value == 1);
+        ESP_LOGI(TAG, "Last health status loaded: %s", status ? "OK" : "FAIL");
+        return status;
+    } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGD(TAG, "No previous health status found, defaulting to false");
+        return false;
+    } else {
+        ESP_LOGE(TAG, "Error reading last health status: %s", esp_err_to_name(err));
+        return false;
+    }
 }

@@ -35,6 +35,7 @@
 #define NVS_KEY_HEALTH_URL "health_url"
 #define NVS_KEY_CHECK_INTERVAL "check_interval"
 #define NVS_KEY_CONFIGURED "configured"
+#define NVS_KEY_LAST_HEALTH_STATUS "last_health"  // Persist last health status
 
 // Configuration structure
 typedef struct {
@@ -43,6 +44,7 @@ typedef struct {
     char health_check_url[MAX_URL_LENGTH];
     uint32_t check_interval_ms;
     bool configured;
+    bool last_health_status;  // Last known health status
 } device_config_t;
 
 #endif // CONFIG_H
