@@ -134,22 +134,15 @@ static void health_check_task(void *pvParameters)
     
     ESP_LOGI(TAG, "Performing health check: %s", health_check_url);
     
-    // Check if URL is HTTPS - convert to HTTP for ESP8266 compatibility
-    char modified_url[MAX_URL_LENGTH];
-    if (strncmp(health_check_url, "https://", 8) == 0) {
-        // Convert HTTPS to HTTP for ESP8266 compatibility
-        snprintf(modified_url, sizeof(modified_url), "http://%s", health_check_url + 8);
-        ESP_LOGW(TAG, "Converting HTTPS to HTTP for ESP8266 compatibility: %s", modified_url);
-    } else {
-        strncpy(modified_url, health_check_url, sizeof(modified_url) - 1);
-        modified_url[sizeof(modified_url) - 1] = '\0';
-    }
-    
     esp_http_client_config_t config = {
-        .url = modified_url,
+        .url = health_check_url,
         .event_handler = http_event_handler,
         .timeout_ms = 10000,  // 10 seconds timeout
         .method = HTTP_METHOD_GET,
+        .skip_cert_common_name_check = true,  // Skip certificate verification for HTTPS
+        .cert_pem = NULL,
+        .client_cert_pem = NULL,
+        .client_key_pem = NULL,
     };
     
     esp_http_client_handle_t client = esp_http_client_init(&config);
